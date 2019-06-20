@@ -6,7 +6,7 @@ TracPy class
 
 import tracpy
 import numpy as np
-import tracmass
+from . import tracmass
 from matplotlib.mlab import find
 
 
@@ -229,8 +229,9 @@ class Tracpy(object):
         # Do z a little lower down
 
         # Initialize seed locations
-        ia = np.ceil(xstart0)
-        ja = np.ceil(ystart0)
+        # these will be used as indices so must be ints
+        ia = np.ceil(xstart0).astype(int)
+        ja = np.ceil(ystart0).astype(int)
 
         # don't use nan's
         # pdb.set_trace()
@@ -240,7 +241,18 @@ class Tracpy(object):
         xstart0 = xstart0[ind2]
         ystart0 = ystart0[ind2]
 
-        dates = nc.variables['ocean_time'][:]
+        # check for point being masked
+        # only keep unmasked drifter locations
+        unmasked = np.where(self.grid.mask_rho[ja, ia] == 1)[0]
+        ia = ia[unmasked]
+        ja = ja[unmasked]
+        xstart0 = xstart0[unmasked]
+        ystart0 = ystart0[unmasked]
+
+        if 'ocean_time' in nc.variables:
+            dates = nc.variables['ocean_time'][:]
+        elif 'time' in nc.variables:
+            dates = nc.variables['time'][:]
         # time at start of drifter test from file in seconds since 1970-01-01
         # add this on at the end since it is big
         t0save = dates[tinds[0]]
@@ -259,7 +271,10 @@ class Tracpy(object):
         # at the beginning of the time loop ahead
         lx = self.grid.imt
         ly = self.grid.jmt
-        lk = self.grid.sc_r.size
+        try:
+            lk = self.grid.sc_r.size
+        except:
+            lk = 2
 
         # Now that we have the grid, initialize the info for the two
         # bounding model steps using the grid size
@@ -303,7 +318,7 @@ class Tracpy(object):
         else:   # 3d case
             # Convert initial real space vertical locations to grid space
             # first find indices of grid cells vertically
-            ka = np.ones(ia.size)*np.nan
+            ka = np.ones(ia.size, dtype=int)*-999  # need int placeholder
             zstart0 = np.ones(ia.size)*np.nan
 
             if self.zpar == 'fromMSL':
@@ -328,7 +343,7 @@ class Tracpy(object):
                 # In this case, the starting z values of the drifters are
                 # found in grid space as z0 below the z surface for each
                 # drifter
-                for i in xrange(ia.size):
+                for i in range(ia.size):
                     ind = (self.zwt[1, :, ja[i], ia[i]] <= self.z0[i])
                     # find value that is just shallower than starting vertical
                     # position
@@ -410,6 +425,10 @@ class Tracpy(object):
         # (vertical are zero-based in tracmass)
         xstart, ystart = tracpy.tools.convert_indices('py2f', xstart, ystart)
 
+        # make flux fields masked arrays
+        ufsub = np.ma.masked_where(ufsub>1e30, ufsub)
+        vfsub = np.ma.masked_where(vfsub>1e30, vfsub)
+
         return xstart, ystart, zstart, ufsub, vfsub, T0
 
     def step(self, xstart, ystart, zstart, ufsub, vfsub, T0, U, V):
@@ -467,17 +486,21 @@ class Tracpy(object):
 
         # Skip calculating real z position if we are doing surface-only
         # drifters anyway
-        if self.z0 != 's' and self.zpar != self.grid.km-1:
+
+        if self.z0 != 's' and self.savell:
+        # if self.z0 != 's' and self.zpar != self.grid.km-1:
 
             # Calculate real z position
             # linear time interpolation constant that is used in tracmass
             r = np.linspace(1./self.N, 1, self.N)
 
-            for n in xrange(self.N):  # loop through time steps
+            for n in range(self.N):  # loop through time steps
                 # interpolate to a specific output time
                 # pdb.set_trace()
                 zwt = (1.-r[n])*self.zwt[0, :, :, :] + \
                     r[n]*self.zwt[1, :, :, :]
+                # mask out land
+                zwt = np.ma.masked_where(zwt>1e30, zwt)
                 zp, dt = tracpy.tools.interpolate3d(xend, yend, zend, zwt)
         else:
             zp = zend

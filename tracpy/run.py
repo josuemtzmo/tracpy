@@ -2,9 +2,11 @@
 Main run script for TracPy system.
 '''
 
+from __future__ import absolute_import
 
 import numpy as np
 from tracpy.time_class import Time
+# from . import tracpy.time_class as Time
 
 
 def run(tp, date, lon0, lat0, T0=None, U=None, V=None):
@@ -43,11 +45,11 @@ def run(tp, date, lon0, lat0, T0=None, U=None, V=None):
     # Loop through model outputs.
     for j, tind in enumerate(tinds[:-1]):
 
-        print 'Using GCM model output index ', j
+        print('Using GCM model output index ', j)
 
         # Loop through substeps in call to TRACMASS in case we want to add on
         # windage, etc, for each step
-        for nsubstep in xrange(tp.nsubsteps):
+        for nsubstep in range(tp.nsubsteps):
 
             xstart, ystart, zstart, ufsub, vfsub, T0 = \
                 tp.prepare_for_model_step(tinds[j+1], nc, flag, xend, yend,
@@ -66,8 +68,8 @@ def run(tp, date, lon0, lat0, T0=None, U=None, V=None):
                 yend_temp,\
                 zend_temp,\
                 flag[ind],\
-                ttend_temp, U, V = tp.step(xstart, ystart, zstart, ufsub,
-                                           vfsub, T0, U, V)
+                ttend_temp, U, V = tp.step(xstart, ystart, zstart, ufsub.filled(0),
+                                           vfsub.filled(0), T0, U, V)
 
             timer.addtime('3: Stepping, using TRACMASS   ')
 
@@ -89,11 +91,11 @@ def run(tp, date, lon0, lat0, T0=None, U=None, V=None):
 
     timer.addtime('5: Processing after simulation')
 
-    print "============================================="
-    print ""
-    print "Simulation name: ", tp.name
-    print ""
-    print "============================================="
+    print("=============================================")
+    print("")
+    print("Simulation name: ", tp.name)
+    print("")
+    print("=============================================")
 
     timer.write()
 

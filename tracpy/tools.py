@@ -69,8 +69,8 @@ def interpolate2d(x, y, grid, itype, xin=None, yin=None, order=1,
         fy = mtri.LinearTriInterpolator(grid.trir, grid.Y.flatten())
         # Need to shift indices to move from rho grid of interpolator to
         # arakawa c grid
-        xi = fx(x, y) - .5
-        yi = fy(x, y) - .5
+        xi = fx(x, y) + .5
+        yi = fy(x, y) + .5
 
     elif itype == 'd_ij2xy':
         # Set up functions for interpolating
@@ -78,8 +78,8 @@ def interpolate2d(x, y, grid, itype, xin=None, yin=None, order=1,
         fy = mtri.LinearTriInterpolator(grid.tri, grid.y_rho.flatten())
         # Need to shift indices to move to rho grid of interpolator from
         # arakawa c grid
-        xi = fx(x+0.5, y+0.5)
-        yi = fy(x+0.5, y+0.5)
+        xi = fx(x-0.5, y-0.5)
+        yi = fy(x-0.5, y-0.5)
 
     elif itype == 'd_ll2ij':
         # Set up functions for interpolating
@@ -87,8 +87,8 @@ def interpolate2d(x, y, grid, itype, xin=None, yin=None, order=1,
         fy = mtri.LinearTriInterpolator(grid.trirllrho, grid.Y.flatten())
         # Need to shift indices to move from rho grid of interpolator to
         # arakawa c grid
-        xi = fx(x, y) - .5
-        yi = fy(x, y) - .5
+        xi = fx(x, y) + .5
+        yi = fy(x, y) + .5
 
     elif itype == 'd_ij2ll':
         # Set up functions for interpolating
@@ -96,27 +96,27 @@ def interpolate2d(x, y, grid, itype, xin=None, yin=None, order=1,
         fy = mtri.LinearTriInterpolator(grid.tri, grid.lat_rho.flatten())
         # Need to shift indices to move to rho grid of interpolator from
         # arakawa c grid
-        xi = fx(x+0.5, y+0.5)
-        yi = fy(x+0.5, y+0.5)
+        xi = fx(x-0.5, y-0.5)
+        yi = fy(x-0.5, y-0.5)
 
     elif itype == 'm_ij2xy':
         # .5's are to shift from u/v grid to rho grid for interpolator
-        xi = ndimage.map_coordinates(grid.x_rho.T, np.array([x.flatten()+.5,
-                                                             y.flatten()+.5]),
+        xi = ndimage.map_coordinates(grid.x_rho.T, np.array([x.flatten()-.5,
+                                                             y.flatten()-.5]),
                                      order=order, mode=mode,
                                      cval=cval).reshape(x.shape)
-        yi = ndimage.map_coordinates(grid.y_rho.T, np.array([x.flatten()+.5,
-                                                             y.flatten()+.5]),
+        yi = ndimage.map_coordinates(grid.y_rho.T, np.array([x.flatten()-.5,
+                                                             y.flatten()-.5]),
                                      order=order, mode=mode,
                                      cval=cval).reshape(y.shape)
 
     elif itype == 'm_ij2ll':
-        xi = ndimage.map_coordinates(grid.lon_rho.T, np.array([x.flatten()+.5,
-                                                               y.flatten()+.5]),
+        xi = ndimage.map_coordinates(grid.lon_rho.T, np.array([x.flatten()-.5,
+                                                               y.flatten()-.5]),
                                      order=order, mode=mode,
                                      cval=cval).reshape(x.shape)
-        yi = ndimage.map_coordinates(grid.lat_rho.T, np.array([x.flatten()+.5,
-                                                               y.flatten()+.5]),
+        yi = ndimage.map_coordinates(grid.lat_rho.T, np.array([x.flatten()-.5,
+                                                               y.flatten()-.5]),
                                      order=order, mode=mode,
                                      cval=cval).reshape(y.shape)
 
@@ -148,9 +148,7 @@ def interpolate3d(x, y, z, zin, order=1, mode='nearest', cval=0.):
          interpolation, it just uses the value of the nearest cell if the
          point lies outside the grid. The default is to treat the values
          outside the grid as zero, which can cause some edge effects if
-         you're interpolating points near the edge. The "order" kwarg
-         controls the order of the splines used. The default is cubic
-         splines, order=3
+         you're interpolating points near the edge.
 
     Returns:
         * zi - Interpolated values
@@ -162,8 +160,12 @@ def interpolate3d(x, y, z, zin, order=1, mode='nearest', cval=0.):
     # Shift of .5 is assuming that input x/y are on a staggered grid frame
     # (counting from the cell edge and across the cell) but that the z values
     # are at the cell center, or rho locations.
-    zi = ndimage.map_coordinates(zin, np.array([x.flatten()+.5,
-                                                y.flatten()+.5,
+    # instead of filling var array mask with nan's, extrapolate out nearest
+    # neighbor value. Distance is by number of cells not euclidean distance.
+    # https://stackoverflow.com/questions/3662361/fill-in-missing-values-with-nearest-neighbour-in-python-numpy-masked-arrays
+    ind = ndimage.distance_transform_edt(zin.mask, return_distances=False, return_indices=True)
+    zi = ndimage.map_coordinates(zin[tuple(ind)].T, np.array([x.flatten()-0.5,
+                                                y.flatten()-0.5,
                                                 z.flatten()]),
                                  order=order, mode=mode,
                                  cval=cval).reshape(z.shape)
@@ -192,7 +194,7 @@ def find_final(xp, yp, ind=-1):
     # Make this a separate function later
     xpc = []
     ypc = []
-    for idrift in xrange(xp.shape[0]):
+    for idrift in range(xp.shape[0]):
         # Find last non-nan and make sure it is in the desired month start
         # time
         ind3 = ~np.isnan(xp[idrift, :])
@@ -337,7 +339,7 @@ def check_points(lon0, lat0, grid, z0=None, nobays=False):
 
     L = len(ind2.ravel())
     Lnan = sum(ind2.ravel())
-    print L - Lnan, '/', L, ' drifters NaN-ed out.'
+    print(L - Lnan, '/', L, ' drifters NaN-ed out.')
 
     lon0 = lon0[ind2].flatten()
     lat0 = lat0[ind2].flatten()
@@ -414,6 +416,10 @@ def make_proj(setup='nwgom', usebasemap=True, **kwargs):
     Returns:
         proj: Projection object for convering between geometric and projected
             coordinates.
+
+    Example usage:
+        proj = tracpy.tools.make_proj('nwgom', usebasemap=True,
+                                      **{'llcrnrlon': -98, 'llcrnrlat': 26})
     """
 
     # Default setups. Can use all of these parameters or can start with them
@@ -452,7 +458,7 @@ def make_proj(setup='nwgom', usebasemap=True, **kwargs):
             if key in inputs:  # if key is in inputs, replace it
                 inputs[key] = value
             else:  # otherwise, error
-                print 'input key is not in inputs dict'
+                print('input key is not in inputs dict')
 
     # Set up projection using inputs dictionary
     if usebasemap:

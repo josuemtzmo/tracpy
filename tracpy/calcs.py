@@ -10,7 +10,7 @@ import time
 import tracpy
 
 
-def Var(xp, yp, tp, varin, nc, units='seconds since 1970-01-01'):
+def Var(xg, yg, tp, varin, nc, dt=50, units='seconds since 1970-01-01'):
     """
     Calculate the given property, varin, along the input drifter tracks. This
     property can be changing in time and space.
@@ -19,7 +19,7 @@ def Var(xp, yp, tp, varin, nc, units='seconds since 1970-01-01'):
         Currently assuming surface tracks.
 
     Args:
-        xp, yp (array): Horizontal drifter position in grid coordinates
+        xg, yg (array): Horizontal drifter position in grid coordinates
          [ndrift, ntime]
         tp (array): Times for drifter [ntime]
         varin (str): Variable to calculate. Available options are: u, v,
@@ -27,6 +27,7 @@ def Var(xp, yp, tp, varin, nc, units='seconds since 1970-01-01'):
         nc: Netcdf file object where the model output can be accessed which
          includes all necessary times units. For time conversion, not used
          for depths.
+        dt: number of model outputs to read in per loop, is limited by memory
 
     Returns:
         * varp - Variable along the drifter track
@@ -50,74 +51,135 @@ def Var(xp, yp, tp, varin, nc, units='seconds since 1970-01-01'):
 
     tstart = time.time()
 
+    # make xg, yg 2d if needed, assume 1d because only 1 drifter
+    if xg.ndim == 1:
+        xg = xg[np.newaxis,:]
+        yg = yg[np.newaxis,:]
+
     # Time indices for the drifter track points
     if varin != 'h':  # don't need time for h
-        t = nc.variables['ocean_time'][:]  # model times
-        istart = find(netCDF.num2date(t, units) <=
-                      netCDF.num2date(tp[0], units))[-1]
-        iend = find(netCDF.num2date(t, units) >=
-                    netCDF.num2date(tp[-1], units))[0]
-        tinds = np.arange(istart, iend)
+        t = nc.variables['ocean_time']  # model times
+        dates = netCDF.num2date(t[:], t.units)
+        tpdates = netCDF.num2date(tp, units)
+        if tpdates[1] > tpdates[0]:  # forward in time
+            istart = np.where(dates <= tpdates[0])[0][-1]
+            iend = np.where(dates >= tpdates[-1])[0][0]
+            dd = 1
+            # dt = 50  # dt is for how many model output time steps to read in
+            iend += 1  # so that iend is inclusive with final pt forward
+        else:  # backward
+            istart = np.where(dates >= tpdates[0])[0][0]
+            iend = np.where(dates <= tpdates[-1])[0][-1]
+            dd = -1
+            dt = -1*dt  # dt is for how many model output time steps to read in
+            iend -= 1  # so that iend is inclusive with final pt backward
 
-    # Read in model information. Try reading it all in the for time, y, and
-    # x and then interpolating from there.
-
-    # 4D variables
-    if varin in ('u', 'v', 'salt', 'temp'):
-        var = nc.variables[varin][tinds, -1, :, :]
-
-    # 3D variables
-    elif varin in ('zeta'):
-        var = nc.variables[varin][tinds, :, :]
-
-    # 2D variables
-    elif varin in ('h'):
-        var = nc.variables[varin][:, :]
-
-    # Grid location of var. xp and yp are on staggered grids, counting from
+    # Grid location of var. xg and yg are on staggered grids, counting from
     # the cell edge and inward. Want to match the grid locations of these and
     # var.
     # varin on ugrid
     if varin in ('u'):
-        # xp correctly align with the u grid in the x direction, so that xp
+        # xg correctly align with the u grid in the x direction, so that xg
         # is at the cell center
         # this shifts the drifter y grid locations from the edge of the cell
         # to the center
-        yp = yp - 0.5
+        yg = yg - 0.5
 
     # varin on vgrid
     elif varin in ('v'):
         # this shifts the drifter x grid locations from the edge of the cell
         # to the center
-        xp = xp - 0.5
-        # yp correctly align with the v grid in the y direction, so that yp
+        xg = xg - 0.5
+        # yg correctly align with the v grid in the y direction, so that yg
         # is at the cell center
 
     # varin on rho grid
     elif varin in ('salt', 'temp', 'zeta', 'h'):
-        # shift both xp and yp to cell center from edge
-        xp = xp - 0.5
-        yp = yp - 0.5
+        # shift both xg and yg to cell center from edge
+        xg = xg - 0.5
+        yg = yg - 0.5
 
-    # Interpolate var to tracks. varp is the variable along the tracks
-    # Need to know grid location of everything
-    # h does not change in time so need to interpolate differently
+    # Read in model information. Try reading it all in the for time, y, and
+    # x and then interpolating from there.
+
     if varin == 'h':
-        varp = ndimage.map_coordinates(var, np.array([yp.flatten(),
-                                       xp.flatten()]),
+        # h does not change in time so need to interpolate differently
+        var = nc.variables[varin][:, :]
+        varp = ndimage.map_coordinates(var, np.array([yg.flatten(),
+                                       xg.flatten()]),
                                        order=1,
-                                       mode='nearest').reshape(xp.shape)
-    # these variables change in time
+                                       mode='nearest').reshape(xg.shape)
+
+
     else:
-        # Make time into a "grid coordinate" that goes from 0 to number of
-        # time indices
-        tg = ((tp-tp[0])/(tp[-1]-tp[0]))*var.shape[0]
-        tgtemp = tg.reshape((1, tg.shape[0])).repeat(xp.shape[0], axis=0)
-        varp = ndimage.map_coordinates(var, np.array([tgtemp.flatten(),
-                                       yp.flatten(), xp.flatten()]),
-                                       order=1,
-                                       mode='nearest').reshape(xp.shape)
-    # print 'time for finding ' + var + ': ', time.time()-tstart
+
+        # conversion between model output time indices and drifter time indices.
+        # they just need to match
+        dt_drifter = abs(tp[1] - tp[0])  # drifter time step in seconds
+        assert 'seconds' in nc['ocean_time'].units, 'not sure about model output time units'
+        dt_model = nc['ocean_time'][1] - nc['ocean_time'][0]  # assume seconds
+
+        import pandas as pd
+
+        tpdatesp = [pd.Timestamp(tpdate) for tpdate in tpdates]
+        datesp = [pd.Timestamp(date) for date in dates]
+        index = pd.Index(tpdates)
+
+        varp = np.empty(xg.shape)
+
+        # looping over model output (not drifters directly)
+        for ist in range(istart,iend,dt):
+
+            # 4D variables
+            if varin in ('u', 'v', 'salt', 'temp'):
+                # load in block of model output that includes drifter tracks
+                var = nc.variables[varin][ist:ist+dt:dd, -1, :,:]
+
+            # 3D variables
+            elif varin in ('zeta'):
+                var = nc.variables[varin][ist:ist+dt:dd, :, :]
+
+            # Interpolate var to tracks. varp is the variable along the tracks
+            # Need to know grid location of everything
+            if dd==1:
+                istarttp = np.where(dates[ist] <= index)[0][0]
+                iendtp = np.where(index <= dates[ist+dt])[0][-1]
+            elif dd==-1:
+                istarttp = np.where(dates[ist] >= index)[0][0]
+                iendtp = np.where(index >= dates[ist+dt])[0][-1]
+
+            # Make time into a "grid coordinate" that goes between 0 to number of
+            # time indices but accounts for the fact that model output may start
+            # earlier and end later
+            tstart = abs((index[istarttp] - dates[ist]).total_seconds()/dt_model)
+            # both are in seconds to find
+            # dt is shifted for 0 indexing
+            tend = abs((dt*dt_model - (dates[ist+dt] - index[iendtp]).total_seconds())/dt_model)
+            tgstep = dt_drifter/dt_model
+            tgend = tend/tgstep + (dt_drifter/dt_model)/tgstep
+            # if tend is close to ~0.5, round down
+            if np.isclose(np.modf(tgend)[0], 0.5):
+                tgend = np.floor(tgend)
+            tg = tgstep*np.arange(tstart/tgstep, tgend, 1)
+            tgtemp = tg.reshape((1, tg.shape[0])).repeat(np.atleast_2d(xg).shape[0], axis=0)
+
+            # need indices for the model output (var) AND separately for drifter tracks
+            # instead of filling var array mask with nan's, extrapolate out nearest
+            # neighbor value. Distance is by number of cells not euclidean distance.
+            # https://stackoverflow.com/questions/3662361/fill-in-missing-values-with-nearest-neighbour-in-python-numpy-masked-arrays
+            ind = ndimage.distance_transform_edt(var.mask, return_distances=False, return_indices=True)
+
+            tgt = tgtemp.flatten()
+            ygt = yg[:,istarttp:iendtp+1].flatten()
+            xgt = xg[:,istarttp:iendtp+1].flatten()
+            varp[:,istarttp:iendtp+1] = ndimage.map_coordinates(var[tuple(ind)], np.array([tgt, ygt, xgt]),
+                                           order=1, mode='nearest').reshape(tgtemp.shape)
+            # plt.pcolormesh(var[0], vmin=varp.min(), vmax=varp.max())
+            # plt.scatter(xg[:,istarttp:iendtp-1:dd], yg[:,istarttp:iendtp-1:dd], s=20,c=varp, linewidth=1, edgecolor='k')
+
+    # apply nans to varp where xg is nan (or <0 which is also out of domain in grid coordinates)
+    ind = np.isnan(xg) + (xg < 0)
+    varp[ind] = np.nan
 
     return varp
 
@@ -196,7 +258,7 @@ def rel_dispersion(lonp, latp, r=[0, 1], squared=True, spherical=True):
     # than r.
     # Then exclude repeated pairs. And calculate initial distances.
     pairs = []
-    for idrifter in xrange(lonp.shape[0]):
+    for idrifter in range(lonp.shape[0]):
         # dist contains all of the distances from other unchecked drifters
         # for each drifter
         dist = get_dist(lonp[idrifter, 0], lonp[idrifter+1:, 0],
@@ -217,7 +279,7 @@ def rel_dispersion(lonp, latp, r=[0, 1], squared=True, spherical=True):
     # pairs = []
     # # # save pairs to save time since they are always the same
     # # if not os.path.exists('tracks/pairs.npz'):
-    # for idrifter in xrange(lonp.shape[0]):
+    # for idrifter in range(lonp.shape[0]):
     #     ind = find(dist[idrifter,:]<=r)
     #     for i in ind:
     #         if ID[idrifter] != ID[i]:
@@ -239,7 +301,7 @@ def rel_dispersion(lonp, latp, r=[0, 1], squared=True, spherical=True):
     D2 = np.ones(lonp.shape[1])*np.nan
     # to collect number of non-nans over all drifters and time steps
     nnans = np.zeros(lonp.shape[1])
-    for ipair in xrange(len(pairs)):
+    for ipair in range(len(pairs)):
 
         # calculate distance in time
         dist = get_dist(lonp[pairs[ipair][0], :], lonp[pairs[ipair][1], :],
@@ -350,7 +412,7 @@ def rel_dispersion_comp(lonpc, latpc, tpc, lonp, latp, tp, r=1,
         latp = latp[:, ::tstride]
         tp = tp[::tstride]
 
-    print 'time for fixing timing: ', time.time()-tstart
+    print('time for fixing timing: ', time.time()-tstart)
 
     # Calculate relative dispersion
     tstart = time.time()
@@ -359,7 +421,7 @@ def rel_dispersion_comp(lonpc, latpc, tpc, lonp, latp, tp, r=1,
     # to collect number of non-nans over all drifters for a time
     nnans = np.zeros(lonp.shape[1])
     # loop through drifters, time is in array, axis=1
-    for i in xrange(lonp.shape[0]):
+    for i in range(lonp.shape[0]):
         dist = get_dist(lonpc[i, :], lonp[i, :],
                         latpc[i, :], latp[i, :])
         if squared:
@@ -369,7 +431,7 @@ def rel_dispersion_comp(lonpc, latpc, tpc, lonp, latp, tp, r=1,
         nnans = nnans + ~np.isnan(dist)
     D2 = D2.squeeze()/nnans  # len(pairs) # average over all pairs
 
-    print 'time for finding numerical D: ', time.time()-tstart
+    print('time for finding numerical D: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -412,7 +474,7 @@ def abs_dispersion(lonp, latp, squared=True):
     D2 = np.ones(lonp.shape[1])*np.nan
     # to collect number of non-nans over all drifters and time steps
     nnans = np.zeros(lonp.shape[1])
-    for idrifter in xrange(lonp.shape[0]):
+    for idrifter in range(lonp.shape[0]):
 
         # calculate distance in time
         dist = get_dist(lonp[idrifter, 0], lonp[idrifter, :],
@@ -425,7 +487,7 @@ def abs_dispersion(lonp, latp, squared=True):
             D2 = np.nansum(np.vstack([D2, dist]), axis=0)
         nnans = nnans + ~np.isnan(dist)  # save these for averaging
     D2 = D2.squeeze()/nnans  # average over all pairs
-    print 'time for finding a: ', time.time()-tstart
+    print('time for finding a: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -469,7 +531,7 @@ def path(lonp, latp, squared=True):
     D2 = np.ones(lonp.shape[1]-1)*np.nan
     # to collect number of non-nans over all drifters and time steps
     nnans = np.zeros(lonp.shape[1]-1)
-    for idrifter in xrange(lonp.shape[0]):
+    for idrifter in range(lonp.shape[0]):
 
         # calculate distance in time
         dist = get_dist(lonp[idrifter, 1:], lonp[idrifter, :-1],
@@ -483,7 +545,7 @@ def path(lonp, latp, squared=True):
             D2 = np.nansum(np.vstack([D2, dist]), axis=0)
         nnans = nnans + ~np.isnan(dist)  # save these for averaging
     D2 = D2.squeeze()/nnans  # average over all pairs
-    print 'time for finding s: ', time.time()-tstart
+    print('time for finding s: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -548,7 +610,7 @@ def moment1(xp):
     nnans = np.sum(~np.isnan(dists), axis=0)
     M = np.nansum(dists, axis=0)/nnans
 
-    print 'time for finding M: ', time.time()-tstart
+    print('time for finding M: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -586,7 +648,7 @@ def moment2(xp, M1):
     nnans = np.sum(~np.isnan(dists), axis=0) - 1
     M2 = np.nansum(dists, axis=0)/nnans
 
-    print 'time for finding M: ', time.time()-tstart
+    print('time for finding M: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -626,7 +688,7 @@ def moment3(xp, M1):
     denom = (np.nansum(dist**2, axis=0)/nnans)**(3/2)
     M3 = num/denom
 
-    print 'time for finding M: ', time.time()-tstart
+    print('time for finding M: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -667,7 +729,7 @@ def moment4(xp, M1):
     # denom = np.nansum(dist**2, axis=0)**2
     M4 = num/denom
 
-    print 'time for finding M: ', time.time()-tstart
+    print('time for finding M: ', time.time()-tstart)
 
     # # Distances squared, separately; times; number of non-nans for this set
     # np.savez(name[:-3] + 'D2.npz', D2=D2, t=t, nnans=nnans)
@@ -680,11 +742,11 @@ def calc_fsle(lonp, latp, tp, alpha=np.sqrt(2)):
     ndrifters = lonp.shape[0]
     ntime = lonp.shape[1]
 
-    dist = np.empty((np.cumsum(xrange(ndrifters))[-1], ntime))
+    dist = np.empty((np.cumsum(range(ndrifters))[-1], ntime))
     driftercount = 0  # holds index in dist for drifters
 
     # Construct drifters into [distance x time] in dist
-    for idrifter in xrange(ndrifters):
+    for idrifter in range(ndrifters):
 
         # lonpc = lonp[idrifter,:]
         # latpc = latp[idrifter,:]
@@ -780,7 +842,7 @@ def run_fsle(Files):
 
         # logic for looping through more than 1 drifter at once
         while driftercount < ndrifters:
-            print 'drifter ' + str(driftercount) + ' of ' + str(ndrifters)
+            print('drifter ' + str(driftercount) + ' of ' + str(ndrifters))
             tSavetemp = calc_fsle(lonp[driftercount:driftercount+ddrifter, :],
                                   latp[driftercount:driftercount+ddrifter, :], tp)
             ind = ~np.isnan(tSavetemp)
@@ -790,4 +852,4 @@ def run_fsle(Files):
 
         # Save fsle for each file/area combination, NOT averaged
         np.savez(fname, dSave=dSave, tSave=tSave, nnans=nnans)
-        print 'saved file', fname
+        print('saved file', fname)

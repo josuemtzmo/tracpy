@@ -11,6 +11,7 @@ Contains:
     save_ll2grid
 """
 
+from __future__ import absolute_import
 import netCDF4 as netCDF
 import glob
 import numpy as np
@@ -18,7 +19,7 @@ from scipy.spatial import Delaunay
 import matplotlib.tri as mtri
 import octant
 import time
-import op
+from . import op
 import os
 import tracpy
 from matplotlib.mlab import find
@@ -64,8 +65,12 @@ def setupROMSfiles(loc, date, ff, tout, time_units, tstride=1):
     # dates = netCDF.num2date(nc.variables['ocean_time'][:], time_units)
     # The calendar definition extends dates to before the year 1582 for use
     # with idealized simulations without meaningful dates.
-    dates = netCDF.num2date(nc.variables['ocean_time'][:], time_units,
-                            calendar='proleptic_gregorian')
+    if 'time' in nc.variables:
+        dates = netCDF.num2date(nc.variables['time'][:], time_units,
+                                calendar='proleptic_gregorian')
+    elif 'ocean_time' in nc.variables:
+        dates = netCDF.num2date(nc.variables['ocean_time'][:], time_units,
+                                calendar='proleptic_gregorian')
     # time index with time value just below date (relative to file ifile)
     istart = find(dates <= date)[-1]
 
@@ -262,7 +267,10 @@ def readgrid(grid_filename, proj, vert_filename=None, usespherical=True):
     # Triangulation for curvilinear space to grid space
     # Have to use SciPy's Triangulation to be more robust.
     # http://matveichev.blogspot.com/2014/02/matplotlibs-tricontour-interesting.html
-    pts = np.column_stack((grid.x_rho.flatten(), grid.y_rho.flatten()))
+    if isinstance(grid.x_rho,np.ma.MaskedArray):
+        pts = np.column_stack((grid.x_rho.data.flatten(), grid.y_rho.data.flatten()))
+    else:
+        pts = np.column_stack((grid.x_rho.flatten(), grid.y_rho.flatten()))
     tess = Delaunay(pts)
     grid.trir = mtri.Triangulation(grid.x_rho.flatten(),
                                    grid.y_rho.flatten(),
@@ -278,7 +286,10 @@ def readgrid(grid_filename, proj, vert_filename=None, usespherical=True):
     mask = mtri.TriAnalyzer(grid.trir).get_flat_tri_mask(0.01, rescale=False)
     grid.trir.set_mask(mask)
 
-    pts = np.column_stack((grid.lon_rho.flatten(), grid.lat_rho.flatten()))
+    if isinstance(grid.x_rho,np.ma.MaskedArray):
+        pts = np.column_stack((grid.lon_rho.data.flatten(), grid.lat_rho.data.flatten()))
+    else:
+        pts = np.column_stack((grid.lon_rho.flatten(), grid.lat_rho.flatten()))
     tess = Delaunay(pts)
     grid.trirllrho = mtri.Triangulation(grid.lon_rho.flatten(),
                                         grid.lat_rho.flatten(),
@@ -404,8 +415,12 @@ def readfields(tind, grid, nc, z0=None, zpar=None, zparuv=None):
     # tic_temp = time.time()
     # Read in model output for index tind
     if z0 == 's':  # read in less model output to begin with, to save time
-        u = nc.variables['u'][tind, zparuv, :, :]
-        v = nc.variables['v'][tind, zparuv, :, :]
+        if nc.variables['u'].ndim == 4:
+            u = nc.variables['u'][tind, zparuv, :, :]
+            v = nc.variables['v'][tind, zparuv, :, :]
+        elif nc.variables['u'].ndim == 3:
+            u = nc.variables['u'][tind, :, :]
+            v = nc.variables['v'][tind, :, :]
         if 'zeta' in nc.variables:
             # [t,j,i], ssh in tracmass
             ssh = nc.variables['zeta'][tind, :, :]
@@ -720,7 +735,7 @@ def loadtransport(name, fmod=None):
         Files = glob.glob('tracks/' + name + '/*.nc')
     elif type(fmod) == list and len(fmod) > 1:
         Files = []
-        for i in xrange(len(fmod)):
+        for i in range(len(fmod)):
             Files = Files + glob.glob('tracks/' + fmod[i])
     else:
         Files = glob.glob('tracks/' + name + '/' + fmod + '.nc')
@@ -775,12 +790,11 @@ def save_ll2grid(name, grid, loc=None):
     # Convert to grid coords
     x, y, dt = tracpy.tools.interpolate2d(lonp, latp, grid, 'd_ll2ij')
     del(lonp, latp, grid)
-    print dt
 
     if 'loc' in d.variables:
         loc = d.variables['loc'][:]
     else:
-        print 'will use input loc value for saving to file'
+        print('will use input loc value for saving to file')
 
     # save new file
     # transport calculation included
